@@ -1,6 +1,6 @@
-# Solana Raydium V4 Wallet Monitor
+#  Wallet Monitor
 
-A Rust application that monitors a specified wallet's interactions with the Raydium V4 program on the Solana blockchain. The application tracks token holdings, calculates price changes, and sends alerts via Telegram when significant price movements occur.
+A Rust application that monitors a specified wallet's interactions with the pump program on the Solana blockchain. The application tracks token holdings, calculates price changes, and sends alerts via Telegram when significant price movements occur.
 
 ## Features
 

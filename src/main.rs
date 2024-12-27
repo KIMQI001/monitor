@@ -6,6 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use tokio;
 
+use crate::models::AlertType;
 mod wallet_monitor;
 mod alert_service;
 mod models;
@@ -37,7 +38,16 @@ async fn main() -> Result<()> {
 
     info!("Starting PUMP program monitor...");
 
-    let mut monitor = wallet_monitor::WalletMonitor::new()?;
+    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
+        .expect("TELEGRAM_BOT_TOKEN must be set");
+    let chat_id = std::env::var("TELEGRAM_CHAT_ID")
+        .expect("TELEGRAM_CHAT_ID must be set")
+        .parse::<i64>()
+        .expect("TELEGRAM_CHAT_ID must be a valid integer");
+
+    let alert_service = alert_service::AlertService::new(&bot_token, chat_id);
+    
+    let mut monitor = wallet_monitor::WalletMonitor::new(alert_service)?;
     monitor.start_monitoring().await?;
 
     Ok(())

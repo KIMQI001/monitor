@@ -164,7 +164,7 @@ pub struct WalletMonitor {
 }
 
 impl WalletMonitor {
-    pub fn new() -> Result<Self> {
+    pub fn new(alert_service: AlertService) -> Result<Self> {
         let wallet_address = env::var("MONITOR_WALLET")?;
         
         info!("Attempting to parse target wallet address: {}", wallet_address);
@@ -184,7 +184,7 @@ impl WalletMonitor {
             target_wallet: wallet_pubkey,
             holdings: Arc::new(Mutex::new(HashMap::new())),
             alerted_mints: Arc::new(Mutex::new(HashSet::new())),
-            alert_service: AlertService::new()?,
+            alert_service,
         })
     }
 
@@ -249,34 +249,24 @@ impl WalletMonitor {
         sol / tokens
     }
 
-    async fn check_and_send_alert(&self, mint: &str, holding: &TokenHolding) -> Result<()> {
+    async fn check_and_send_alert(&self, mint: &str, holding: &TokenHolding, alerted_mints: &mut HashSet<String>) -> Result<()> {
         let price_change = holding.price_change_percentage();
         info!("Checking alert for {}: price change {}%", mint, price_change);
         
-        if price_change > 5 {
-            let mut alerted_mints = self.alerted_mints.lock().await;
+        if price_change > 100 {
+
             if !alerted_mints.contains(mint) {
                 info!("Sending alert for {}: price change {}%", mint, price_change);
                 
                 // 构造通知消息
                 let message = format!(
                     "🚀 Token Pump Alert!\n\n\
-                     Token: {}\n\
-                     Current Price: {} SOL\n\
-                     Avg Buy Price: {} SOL\n\
-                     Price Change: {}%\n\
-                     Amount: {}\n\
-                     Total Value: {} SOL\n\
-                     Total Cost: {} SOL\n\
-                     PnL: {} SOL",
-                    mint,
-                    format_f64(holding.current_price),
-                    format_f64(holding.avg_price()),
-                    price_change,
-                    format_token_amount(holding.amount),
-                    format_f64(holding.total_value()),
-                    format_f64(holding.total_cost),
-                    format_f64(holding.total_value() - holding.total_cost)
+                    Token: <a href=\"https://gmgn.ai/sol/token/{}\">{}</a>\n\
+                    Current Price: {:.9} SOL\n\
+                    Avg Buy Price: {:.9} SOL",
+                    mint, mint,
+                    holding.current_price,
+                    holding.avg_price()
                 );
 
                 // 发送通知
@@ -288,6 +278,7 @@ impl WalletMonitor {
                     },
                     Err(e) => {
                         error!("Failed to send alert for {}: {:?}", mint, e);
+                        return Err(anyhow::anyhow!("Failed to send alert: {}", e));
                     }
                 }
             } else {
@@ -298,7 +289,9 @@ impl WalletMonitor {
     }
 
     async fn update_holdings(&self, mint: String, is_buy: bool, token_amount: u64, price: f64) {
+        // 获取所有需要的锁
         let mut holdings = self.holdings.lock().await;
+        let mut alerted_mints = self.alerted_mints.lock().await;
         
         if is_buy {
             // 买入，增加持仓
@@ -311,7 +304,7 @@ impl WalletMonitor {
             holding.current_price = price;
             
             // 检查是否需要发送通知
-            if let Err(e) = self.check_and_send_alert(&mint, holding).await {
+            if let Err(e) = self.check_and_send_alert(&mint, holding, &mut alerted_mints).await {
                 error!("Failed to send alert: {:?}", e);
             }
             
@@ -328,7 +321,7 @@ impl WalletMonitor {
                 holding.current_price = price;
                 
                 // 检查是否需要发送通知
-                if let Err(e) = self.check_and_send_alert(&mint, holding).await {
+                if let Err(e) = self.check_and_send_alert(&mint, holding, &mut alerted_mints).await {
                     error!("Failed to send alert: {:?}", e);
                 }
                 
@@ -342,9 +335,6 @@ impl WalletMonitor {
                     info!("{}", holding);
                     info!("====================");
                     holdings.remove(&mint);
-                    
-                    // 清除通知记录
-                    let mut alerted_mints = self.alerted_mints.lock().await;
                     alerted_mints.remove(&mint);
                 }
             }
@@ -352,14 +342,15 @@ impl WalletMonitor {
     }
 
     async fn update_price(&self, mint: &str, price: f64) {
+        // 获取所有需要的锁
+        let mut holdings = self.holdings.lock().await;
+        let mut alerted_mints = self.alerted_mints.lock().await;
+        
         // 如果价格为 0，跳过更新
         if price == 0.0 {
             debug!("Skipping price update with zero price for {}", mint);
             return;
         }
-        
-        let mut holdings = self.holdings.lock().await;
-        let mut alerted_mints = self.alerted_mints.lock().await;
         
         // 如果持仓数量为 0，直接移除
         if let Some(holding) = holdings.get(mint) {
@@ -380,7 +371,7 @@ impl WalletMonitor {
             holding.current_price = price;
             
             // 检查是否需要发送通知
-            if let Err(e) = self.check_and_send_alert(mint, holding).await {
+            if let Err(e) = self.check_and_send_alert(mint, holding, &mut alerted_mints).await {
                 error!("Failed to send alert: {:?}", e);
             }
             
@@ -488,13 +479,13 @@ impl WalletMonitor {
                     target_wallet: Pubkey::from_str("ZDLFG5UNPzeNsEkacw9TdKHT1fBZCACfAQymjWnpcvg").unwrap(),
                     holdings: holdings_clone.clone(),
                     alerted_mints: Arc::new(Mutex::new(HashSet::new())),
-                    alert_service: match AlertService::new() {
-                        Ok(service) => service,
-                        Err(e) => {
-                            error!("Failed to create AlertService: {:?}", e);
-                            continue;
-                        }
-                    },
+                    alert_service: AlertService::new(
+                        &env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN must be set"),
+                        env::var("TELEGRAM_CHAT_ID")
+                            .expect("TELEGRAM_CHAT_ID must be set")
+                            .parse()
+                            .expect("TELEGRAM_CHAT_ID must be a valid integer")
+                    ),
                 };
                 monitor.print_holdings().await;
             }
