@@ -1,0 +1,25 @@
+[package]
+name = "sol-pump-monitor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.32.0", features = ["full"] }
+solana-client = "1.17.6"
+solana-sdk = "1.17.6"
+solana-account-decoder = "1.17.6"
+spl-token = "4.0.0"
+anyhow = "1.0.75"
+futures-util = "0.3.28"
+log = "0.4.20"
+env_logger = "0.10.0"
+dotenv = "0.15.0"
+serde = { version = "1.0.188", features = ["derive"] }
+serde_json = "1.0.107"
+tokio-tungstenite = { version = "0.20.1", features = ["native-tls"] }
+url = "2.4.1"
+teloxide = { version = "0.12.2", features = ["macros"] }
+chrono = "0.4"
+base64 = "0.21.5"
+reqwest = { version = "0.11", features = ["json"] }
+bs58 = "0.5.0"
