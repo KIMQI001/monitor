@@ -1,55 +1,4 @@
-use anyhow::Result;
-use chrono::Utc;
-use futures_util::{sink::SinkExt, StreamExt};
-use log::{error, info, warn};
-use std::env;
-use std::sync::Arc;
-use teloxide::{
-    prelude::*,
-    types::{ChatId, MessageId, ParseMode},
-};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use url::Url;
-use crate::models::{Alert, AlertType};
-
-pub struct AlertService {
-    bot: Bot,
-    chat_id: i64,
-    topic_id: Option<i32>,
-    ws_url: Option<String>,
-    ws_sender: Option<Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
-        >,
-        Message
-    >>>>,
-}
-
-impl AlertService {
-    pub async fn new(bot_token: &str, chat_id: i64, topic_id: Option<i32>, ws_url: Option<String>) -> Result<Self> {
-        let mut service = Self {
-            bot: Bot::new(bot_token),
-            chat_id,
-            topic_id,
-            ws_url,
-            ws_sender: None,
-        };
-
-        // 如果提供了 WebSocket URL，则初始化连接
-        if let Some(url) = &service.ws_url {
-            service.init_ws().await?;
-        }
-
-        Ok(service)
-    }
-
-    async fn init_ws(&mut self) -> Result<()> {
-        if let Some(ws_url) = &self.ws_url {
-            let url = Url::parse(ws_url)?;
-            let (ws_stream, _) = connect_async(url).await?;
-            let (sender, _) = ws_stream.split();
-            self.ws_sender = Some(Arc::new(tokio::sync::Mutex::new(sender)));
-use crate::models::{Alert, AlertType};
+use crate::models::{Alert, AlertType, TradeSignal};
 use anyhow::Result;
 use chrono::Utc;
 use futures_util::SinkExt;
@@ -57,44 +6,31 @@ use log::{error, info, warn};
 use std::env;
 use teloxide::{
     prelude::*,
-    types::{ChatId, ParseMode},
+    types::{ChatId, MessageId, ParseMode},
 };
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
+use serde_json;
 
-#[derive(Clone)]
 pub struct AlertService {
-    pub bot: Bot,
-    pub chat_id: i64,
-    pub topic_id: i32,
+    bot: Bot,
+    chat_id: i64,
+    topic_id: Option<i32>,
     ws_url: Option<String>,
 }
 
 impl AlertService {
-    pub fn new(bot_token: &str, chat_id: i64) -> Self {
-        let topic_id = env::var("TELEGRAM_TOPIC_ID")
-            .expect("TELEGRAM_TOPIC_ID must be set")
-            .parse::<i32>()
-            .expect("TELEGRAM_TOPIC_ID must be a valid integer");
-
+    pub fn new(bot_token: &str, chat_id: i64, topic_id: Option<i32>, ws_url: Option<String>) -> Self {
         Self {
             bot: Bot::new(bot_token),
             chat_id,
             topic_id,
-            ws_url: match env::var("WS_ALERT_URL") {
-                Ok(url) => {
-                    info!("Found WebSocket URL: {}", url);
-                    Some(url)
-                }
-                Err(e) => {
-                    warn!("WebSocket URL not found: {:?}", e);
-                    None
-                }
-            },
+            ws_url,
         }
     }
 
-    pub async fn send_alert(&self, message: &str, alert_type: AlertType) -> Result<()> {
+    pub async fn send_alert(&self, message: &str, alert_type: AlertType, mint: Option<String>) -> Result<()> {
+        let alert_type_clone = alert_type.clone();
         let alert = Alert {
             message: message.to_string(),
             alert_type,
@@ -105,6 +41,22 @@ impl AlertService {
         match self.send_to_telegram(&self.format_alert_message(&alert)).await {
             Ok(_) => {
                 info!("Successfully sent alert to Telegram");
+                
+                // 如果是价格提醒，发送信号到 WebSocket
+                if alert_type_clone == AlertType::PriceAlert {
+                    if let Some(mint_address) = mint {
+                        let signal = TradeSignal {
+                            signal: "sniper_pump1".to_string(),
+                            mint: mint_address,
+                            timestamp: Utc::now().timestamp(),
+                        };
+                        
+                        if let Err(e) = self.send_to_ws(&signal).await {
+                            error!("Failed to send signal to WebSocket: {}", e);
+                        }
+                    }
+                }
+                
                 Ok(())
             }
             Err(e) => {
@@ -115,13 +67,13 @@ impl AlertService {
         }
     }
 
-    async fn send_to_ws(&self, alert: &Alert) -> Result<()> {
+    async fn send_to_ws(&self, signal: &TradeSignal) -> Result<()> {
         if let Some(ref ws_url) = self.ws_url {
             let url = Url::parse(ws_url)?;
             let (mut ws_stream, _) = connect_async(url).await?;
-            let message = serde_json::to_string(alert)?;
-            ws_stream.send(Message::Text(message)).await?;
-            info!("Alert sent to WebSocket");
+            let message = serde_json::to_string(signal)?;
+            ws_stream.send(Message::Text(message.clone())).await?;
+            info!("Signal sent to WebSocket: {}", message);
         }
         Ok(())
     }
@@ -130,13 +82,15 @@ impl AlertService {
         let chat_id = ChatId(self.chat_id);
         
         match self.bot.send_message(chat_id, message)
-            .message_thread_id(self.topic_id)  
+            .message_thread_id(self.topic_id.unwrap_or(0))  
             .parse_mode(ParseMode::Html)
             .await {
             Ok(sent_message) => {
                 info!("Successfully sent message to Telegram. Message ID: {}", sent_message.id);
                 info!("Chat ID used: {}", chat_id.0);
-                info!("Topic ID used: {}", self.topic_id);
+                if let Some(topic_id) = self.topic_id {
+                    info!("Topic ID used: {}", topic_id);
+                }
                 Ok(())
             },
             Err(e) => {

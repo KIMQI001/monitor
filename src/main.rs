@@ -44,8 +44,17 @@ async fn main() -> Result<()> {
         .expect("TELEGRAM_CHAT_ID must be set")
         .parse::<i64>()
         .expect("TELEGRAM_CHAT_ID must be a valid integer");
+    let topic_id = std::env::var("TELEGRAM_TOPIC_ID")
+        .ok()
+        .and_then(|id| id.parse::<i32>().ok());
+    let ws_url = std::env::var("WS_ALERT_URL").ok();
 
-    let alert_service = alert_service::AlertService::new(&bot_token, chat_id);
+    let alert_service = alert_service::AlertService::new(
+        &bot_token,
+        chat_id,
+        topic_id,
+        ws_url
+    );
     
     let mut monitor = wallet_monitor::WalletMonitor::new(alert_service)?;
     monitor.start_monitoring().await?;

@@ -53,16 +53,22 @@ pub struct TokenTransfer {
     pub to_user_account: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlertType {
+    PriceAlert,
+    Error,
+}
+
+#[derive(Debug, Clone)]
 pub struct Alert {
     pub message: String,
     pub alert_type: AlertType,
     pub timestamp: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum AlertType {
-    PriceAlert,
-    NewToken,
-    MintEvent,
+#[derive(Debug, Serialize)]
+pub struct TradeSignal {
+    pub signal: String,
+    pub mint: String,
+    pub timestamp: i64,
 }

@@ -270,7 +270,7 @@ impl WalletMonitor {
                 );
 
                 // 发送通知
-                match self.alert_service.send_alert(&message, AlertType::PriceAlert).await {
+                match self.alert_service.send_alert(&message, AlertType::PriceAlert, Some(mint.to_string())).await {
                     Ok(_) => {
                         info!("Successfully sent alert for {}", mint);
                         // 记录已发送通知
@@ -484,7 +484,11 @@ impl WalletMonitor {
                         env::var("TELEGRAM_CHAT_ID")
                             .expect("TELEGRAM_CHAT_ID must be set")
                             .parse()
-                            .expect("TELEGRAM_CHAT_ID must be a valid integer")
+                            .expect("TELEGRAM_CHAT_ID must be a valid integer"),
+                        env::var("TELEGRAM_TOPIC_ID")
+                            .ok()
+                            .and_then(|id| id.parse::<i32>().ok()),
+                        env::var("WS_ALERT_URL").ok()
                     ),
                 };
                 monitor.print_holdings().await;
