@@ -56,6 +56,11 @@ async fn main() -> Result<()> {
         ws_url
     );
     
+    let price_change_threshold = std::env::var("PRICE_CHANGE_THRESHOLD")
+        .unwrap_or_else(|_| "100".to_string())
+        .parse::<f64>()
+        .unwrap_or(100.0);
+
     let mut monitor = wallet_monitor::WalletMonitor::new(alert_service)?;
     monitor.start_monitoring().await?;
 

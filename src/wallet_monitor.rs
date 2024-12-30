@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use log::{error, info, debug};
 use solana_sdk::{pubkey::Pubkey};
 use std::{env, str::FromStr, collections::{HashMap, HashSet}, time::Duration, fmt, fmt::Write};
-use tokio::{sync::Mutex, time::interval};
+use tokio::{sync::{RwLock, Mutex}, time::interval};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 use base64::{Engine as _, engine::general_purpose};
@@ -158,13 +158,19 @@ impl fmt::Display for TokenHolding {
 
 pub struct WalletMonitor {
     target_wallet: Pubkey,
-    holdings: Arc<Mutex<HashMap<String, TokenHolding>>>,
+    holdings: Arc<RwLock<HashMap<String, TokenHolding>>>,
     alerted_mints: Arc<Mutex<HashSet<String>>>,  // 记录已发送通知的代币
     alert_service: AlertService,
+    price_change_threshold: f64,
 }
 
 impl WalletMonitor {
     pub fn new(alert_service: AlertService) -> Result<Self> {
+        let price_change_threshold: f64 = env::var("PRICE_CHANGE_THRESHOLD")
+            .unwrap_or_else(|_| "5.0".to_string())
+            .parse()
+            .unwrap_or(5.0);
+        
         let wallet_address = env::var("MONITOR_WALLET")?;
         
         info!("Attempting to parse target wallet address: {}", wallet_address);
@@ -182,9 +188,10 @@ impl WalletMonitor {
         
         Ok(Self {
             target_wallet: wallet_pubkey,
-            holdings: Arc::new(Mutex::new(HashMap::new())),
+            holdings: Arc::new(RwLock::new(HashMap::new())),
             alerted_mints: Arc::new(Mutex::new(HashSet::new())),
             alert_service,
+            price_change_threshold,
         })
     }
 
@@ -253,7 +260,7 @@ impl WalletMonitor {
         let price_change = holding.price_change_percentage();
         info!("Checking alert for {}: price change {}%", mint, price_change);
         
-        if price_change > 100 {
+        if price_change as f64 > self.price_change_threshold {
 
             if !alerted_mints.contains(mint) {
                 info!("Sending alert for {}: price change {}%", mint, price_change);
@@ -290,7 +297,7 @@ impl WalletMonitor {
 
     async fn update_holdings(&self, mint: String, is_buy: bool, token_amount: u64, price: f64) {
         // 获取所有需要的锁
-        let mut holdings = self.holdings.lock().await;
+        let mut holdings = self.holdings.write().await;
         let mut alerted_mints = self.alerted_mints.lock().await;
         
         if is_buy {
@@ -343,7 +350,7 @@ impl WalletMonitor {
 
     async fn update_price(&self, mint: &str, price: f64) {
         // 获取所有需要的锁
-        let mut holdings = self.holdings.lock().await;
+        let mut holdings = self.holdings.write().await;
         let mut alerted_mints = self.alerted_mints.lock().await;
         
         // 如果价格为 0，跳过更新
@@ -392,8 +399,8 @@ impl WalletMonitor {
     }
 
     async fn print_holdings(&self) {
-        let mut holdings = self.holdings.lock().await;
-        let mut alerted_mints = self.alerted_mints.lock().await;
+        let holdings = self.holdings.read().await;
+        let alerted_mints = self.alerted_mints.lock().await;
         
         // 打印所有持仓的详细信息
         info!("\n=== Current Holdings Debug ===");
@@ -419,11 +426,11 @@ impl WalletMonitor {
             })
             .collect();
         
-        // 移除代币和对应的通知记录
+        // 释放读锁，获取写锁来删除
+        drop(holdings);
+        let mut holdings = self.holdings.write().await;
         for mint in to_remove {
-            info!("Actually removing mint: {}", mint);
             holdings.remove(&mint);
-            alerted_mints.remove(&mint);
         }
         
         if !holdings.is_empty() {
@@ -490,6 +497,7 @@ impl WalletMonitor {
                             .and_then(|id| id.parse::<i32>().ok()),
                         env::var("WS_ALERT_URL").ok()
                     ),
+                    price_change_threshold: 5.0,
                 };
                 monitor.print_holdings().await;
             }
@@ -582,7 +590,7 @@ impl WalletMonitor {
                                                         price = trade_price;
                                                     } else {
                                                         // 如果不是目标钱包的交易，检查是否需要更新价格
-                                                        let holdings = self.holdings.lock().await;
+                                                        let holdings = self.holdings.read().await;
                                                         if holdings.contains_key(&mint) {
                                                             drop(holdings); // 释放锁
                                                             self.update_price(&mint, trade_price).await;
